@@ -8,9 +8,6 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-
 jobs:
   promote-dev-to-master:
     if: github.ref == 'refs/heads/dev'
@@ -31,13 +28,25 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git
+      - name: Configure SSH deploy key
         run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_GH_PROMOTION_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-          git config --global push.default current
+
+      - name: Switch remote to SSH
+        run: |
+          REPO_URL="git@github.com:${{ github.repository }}.git"
+          git remote set-url origin "$REPO_URL"
+          echo "✓ Remote switched to SSH: $REPO_URL"
+
+      - name: Test SSH connection
+        run: |
+          ssh -i ~/.ssh/id_rsa -T git@github.com || true
 
       - name: Fetch dev branch
         run: |
