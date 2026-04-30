@@ -1,0 +1,219 @@
+name: Promote Dev to Master
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_promotion:
+        description: 'Type "yes" to confirm promotion of dev to master'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote-dev-to-master:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [[ "${{ inputs.confirm_promotion }}" != "yes" ]]; then
+            echo "❌ ERROR: Promotion not confirmed"
+            echo "Please type 'yes' in the confirm_promotion field to proceed"
+            exit 1
+          fi
+          echo "✓ Confirmation received"
+
+      - name: Checkout master branch
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git config --global push.default current
+
+      - name: Fetch dev branch
+        run: |
+          echo "Fetching dev branch from origin..."
+          if ! git fetch origin dev:dev 2>/dev/null; then
+            echo "❌ ERROR: Dev branch does not exist on remote"
+            echo ""
+            echo "Please create the dev branch first:"
+            echo "  git checkout -b dev"
+            echo "  git push -u origin dev"
+            exit 1
+          fi
+          echo "✓ Dev branch fetched successfully"
+
+      - name: Verify dev branch content
+        run: |
+          if ! git rev-parse --verify dev >/dev/null 2>&1; then
+            echo "❌ ERROR: Dev branch verification failed"
+            exit 1
+          fi
+
+          DEV_COMMITS=$(git rev-list --count dev)
+          echo "✓ Dev branch has $DEV_COMMITS commit(s)"
+
+          if [[ "$DEV_COMMITS" -eq 0 ]]; then
+            echo "⚠️  WARNING: Dev branch appears to be empty"
+          fi
+
+      - name: Check if dev is ahead of master
+        id: check_ahead
+        run: |
+          echo "Checking if dev has changes to promote..."
+
+          MERGE_BASE=$(git merge-base master dev)
+          echo "Merge base: $MERGE_BASE"
+
+          if git rev-parse master >/dev/null 2>&1; then
+            AHEAD=$(git rev-list --count master..dev)
+            echo "Dev is $AHEAD commit(s) ahead of master"
+
+            if [[ "$AHEAD" -eq 0 ]]; then
+              echo "status=no_changes" >> "$GITHUB_OUTPUT"
+              echo "⚠️  WARNING: Dev branch is already up-to-date with master"
+              echo "No promotion needed - dev and master are at the same commit"
+            else
+              echo "status=has_changes" >> "$GITHUB_OUTPUT"
+              echo "✓ Dev has $AHEAD commit(s) to promote"
+            fi
+          else
+            echo "status=first_promotion" >> "$GITHUB_OUTPUT"
+            echo "✓ This appears to be the first promotion (master at merge base)"
+          fi
+
+      - name: Detect merge conflicts
+        id: conflict_check
+        run: |
+          echo "Detecting potential merge conflicts..."
+
+          if ! git merge --no-commit --no-ff dev 2>&1; then
+            echo "❌ MERGE CONFLICTS DETECTED"
+            echo ""
+            echo "The following files have conflicts:"
+            git diff --name-only --diff-filter=U
+            echo ""
+            echo "Please resolve conflicts manually:"
+            echo "  1. git checkout master"
+            echo "  2. git pull origin master"
+            echo "  3. git merge dev"
+            echo "  4. Resolve conflicts"
+            echo "  5. git commit"
+            echo "  6. git push origin master"
+            echo "  7. git checkout dev"
+            echo "  8. git merge master"
+            echo "  9. git push origin dev"
+            exit 1
+          fi
+
+          CONFLICTS=$(git diff --name-only --diff-filter=U || true)
+          if [[ -n "$CONFLICTS" ]]; then
+            echo "❌ MERGE CONFLICTS DETECTED"
+            echo ""
+            echo "Conflicting files:"
+            echo "$CONFLICTS"
+            echo ""
+            echo "Please resolve conflicts manually before promoting"
+            git merge --abort
+            exit 1
+          fi
+
+          echo "✓ No merge conflicts detected"
+          echo "conflicts=none" >> "$GITHUB_OUTPUT"
+
+      - name: Show merge summary
+        if: steps.check_ahead.outputs.status != 'no_changes'
+        run: |
+          echo "Merge summary:"
+          git log --oneline master..dev || echo "No commits to show"
+
+      - name: Abort test merge
+        if: steps.check_ahead.outputs.status != 'no_changes'
+        run: |
+          git merge --abort
+          echo "Test merge aborted, preparing for actual merge"
+
+      - name: Merge dev into master
+        if: steps.check_ahead.outputs.status != 'no_changes'
+        run: |
+          echo "Merging dev into master..."
+          git merge --no-ff dev -m "Merge dev into master
+
+          Promoted dev branch to master via GitHub Actions
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          echo "✓ Merge commit created"
+
+      - name: Push master
+        if: steps.check_ahead.outputs.status != 'no_changes'
+        run: |
+          echo "Pushing master to origin..."
+          if ! git push origin master; then
+            echo "❌ ERROR: Failed to push master"
+            exit 1
+          fi
+          echo "✓ Master pushed successfully"
+
+      - name: Back-merge master into dev
+        if: steps.check_ahead.outputs.status != 'no_changes'
+        run: |
+          echo "Back-merging master into dev..."
+          git checkout dev
+
+          git pull origin dev
+
+          if ! git merge --no-ff master -m "Back-merge master into dev
+
+          Synchronized dev with master after promotion
+          Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"; then
+            echo "❌ ERROR: Back-merge failed"
+            echo "This should not happen if the first merge succeeded"
+            echo "Manual intervention required"
+            exit 1
+          fi
+
+          echo "✓ Back-merge completed successfully"
+
+      - name: Push dev
+        if: steps.check_ahead.outputs.status != 'no_changes'
+        run: |
+          echo "Pushing dev to origin..."
+          if ! git push origin dev; then
+            echo "❌ ERROR: Failed to push dev"
+            exit 1
+          fi
+          echo "✓ Dev pushed successfully"
+
+      - name: Promotion summary
+        if: steps.check_ahead.outputs.status != 'no_changes'
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "✓ PROMOTION COMPLETED SUCCESSFULLY"
+          echo "=========================================="
+          echo ""
+          echo "Dev branch has been promoted to master"
+          echo "Master has been back-merged into dev"
+          echo ""
+          echo "Commit history:"
+          git log --oneline -5
+
+      - name: No changes needed
+        if: steps.check_ahead.outputs.status == 'no_changes'
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "⚠️  NO PROMOTION NEEDED"
+          echo "=========================================="
+          echo ""
+          echo "Dev branch is already up-to-date with master"
+          echo "No changes to promote"
