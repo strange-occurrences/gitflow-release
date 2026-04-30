@@ -12,6 +12,8 @@ jobs:
   promote-dev-to-master:
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
+    concurrency:
+      group: promotion-${{ github.ref }}
 
     steps:
       - name: Validate branch
@@ -28,8 +30,10 @@ jobs:
           echo "✓ Running from dev branch"
 
       - name: Validate confirmation
+        env:
+          CONFIRM_PROMOTION: ${{ inputs.confirm_promotion }}
         run: |
-          if [[ "${{ inputs.confirm_promotion }}" != "yes" ]]; then
+          if [[ "$CONFIRM_PROMOTION" != "yes" ]]; then
             echo "❌ ERROR: Promotion not confirmed"
             echo "Please type 'yes' in the confirm_promotion field to proceed"
             exit 1
@@ -37,7 +41,7 @@ jobs:
           echo "✓ Confirmation received"
 
       - name: Checkout master branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: master
           fetch-depth: 0
@@ -114,6 +118,7 @@ jobs:
           fi
 
       - name: Detect merge conflicts
+        if: steps.check_ahead.outputs.status != 'no_changes'
         id: conflict_check
         run: |
           echo "Detecting potential merge conflicts..."
