@@ -12,10 +12,15 @@ jobs:
   promote-dev-to-master:
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
+    concurrency:
+      group: promotion-${{ github.ref }}
+    permissions:
+      contents: read
 
     steps:
       - name: Validate branch
         run: |
+          set -euo pipefail
           if [[ "${{ github.ref }}" != "refs/heads/dev" ]]; then
             echo "❌ ERROR: This workflow can only be run from the dev branch"
             echo ""
@@ -28,8 +33,11 @@ jobs:
           echo "✓ Running from dev branch"
 
       - name: Validate confirmation
+        env:
+          CONFIRM_PROMOTION: ${{ inputs.confirm_promotion }}
         run: |
-          if [[ "${{ inputs.confirm_promotion }}" != "yes" ]]; then
+          set -euo pipefail
+          if [[ "$CONFIRM_PROMOTION" != "yes" ]]; then
             echo "❌ ERROR: Promotion not confirmed"
             echo "Please type 'yes' in the confirm_promotion field to proceed"
             exit 1
@@ -37,15 +45,18 @@ jobs:
           echo "✓ Confirmation received"
 
       - name: Checkout master branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: master
           fetch-depth: 0
 
       - name: Configure SSH deploy key
+        env:
+          SSH_KEY: ${{ secrets.SSH_GH_PROMOTION_KEY }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_GH_PROMOTION_KEY }}" > ~/.ssh/id_rsa
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan github.com >> ~/.ssh/known_hosts
           git config --global user.name "GitHub Actions Bot"
@@ -53,18 +64,21 @@ jobs:
 
       - name: Switch remote to SSH
         run: |
+          set -euo pipefail
           REPO_URL="git@github.com:${{ github.repository }}.git"
           git remote set-url origin "$REPO_URL"
           echo "✓ Remote switched to SSH: $REPO_URL"
 
       - name: Test SSH connection
         run: |
+          set -euo pipefail
           ssh -i ~/.ssh/id_rsa -T git@github.com || true
 
       - name: Fetch dev branch
         run: |
+          set -euo pipefail
           echo "Fetching dev branch from origin..."
-          if ! git fetch origin dev:dev 2>/dev/null; then
+          if ! git ls-remote --exit-code origin refs/heads/dev >/dev/null 2>&1; then
             echo "❌ ERROR: Dev branch does not exist on remote"
             echo ""
             echo "Please create the dev branch first:"
@@ -72,10 +86,12 @@ jobs:
             echo "  git push -u origin dev"
             exit 1
           fi
+          git fetch origin dev:dev
           echo "✓ Dev branch fetched successfully"
 
       - name: Verify dev branch content
         run: |
+          set -euo pipefail
           if ! git rev-parse --verify dev >/dev/null 2>&1; then
             echo "❌ ERROR: Dev branch verification failed"
             exit 1
@@ -91,31 +107,26 @@ jobs:
       - name: Check if dev is ahead of master
         id: check_ahead
         run: |
+          set -euo pipefail
           echo "Checking if dev has changes to promote..."
 
-          MERGE_BASE=$(git merge-base master dev)
-          echo "Merge base: $MERGE_BASE"
+          AHEAD=$(git rev-list --count master..dev)
+          echo "Dev is $AHEAD commit(s) ahead of master"
 
-          if git rev-parse master >/dev/null 2>&1; then
-            AHEAD=$(git rev-list --count master..dev)
-            echo "Dev is $AHEAD commit(s) ahead of master"
-
-            if [[ "$AHEAD" -eq 0 ]]; then
-              echo "status=no_changes" >> "$GITHUB_OUTPUT"
-              echo "⚠️  WARNING: Dev branch is already up-to-date with master"
-              echo "No promotion needed - dev and master are at the same commit"
-            else
-              echo "status=has_changes" >> "$GITHUB_OUTPUT"
-              echo "✓ Dev has $AHEAD commit(s) to promote"
-            fi
+          if [[ "$AHEAD" -eq 0 ]]; then
+            echo "status=no_changes" >> "$GITHUB_OUTPUT"
+            echo "⚠️  WARNING: Dev branch is already up-to-date with master"
+            echo "No promotion needed - dev and master are at the same commit"
           else
-            echo "status=first_promotion" >> "$GITHUB_OUTPUT"
-            echo "✓ This appears to be the first promotion (master at merge base)"
+            echo "status=has_changes" >> "$GITHUB_OUTPUT"
+            echo "✓ Dev has $AHEAD commit(s) to promote"
           fi
 
       - name: Detect merge conflicts
+        if: steps.check_ahead.outputs.status != 'no_changes'
         id: conflict_check
         run: |
+          set -euo pipefail
           echo "Detecting potential merge conflicts..."
 
           if ! git merge --no-commit --no-ff dev 2>&1; then
@@ -134,6 +145,7 @@ jobs:
             echo "  7. git checkout dev"
             echo "  8. git merge master"
             echo "  9. git push origin dev"
+            git merge --abort
             exit 1
           fi
 
@@ -155,18 +167,21 @@ jobs:
       - name: Show merge summary
         if: steps.check_ahead.outputs.status != 'no_changes'
         run: |
+          set -euo pipefail
           echo "Merge summary:"
           git log --oneline master..dev || echo "No commits to show"
 
       - name: Abort test merge
         if: steps.check_ahead.outputs.status != 'no_changes'
         run: |
+          set -euo pipefail
           git merge --abort
           echo "Test merge aborted, preparing for actual merge"
 
       - name: Merge dev into master
         if: steps.check_ahead.outputs.status != 'no_changes'
         run: |
+          set -euo pipefail
           echo "Merging dev into master..."
           git merge --no-ff dev -m "Merge dev into master
 
@@ -178,6 +193,7 @@ jobs:
       - name: Push master
         if: steps.check_ahead.outputs.status != 'no_changes'
         run: |
+          set -euo pipefail
           echo "Pushing master to origin..."
           if ! git push origin master; then
             echo "❌ ERROR: Failed to push master"
@@ -188,12 +204,13 @@ jobs:
       - name: Back-merge master into dev
         if: steps.check_ahead.outputs.status != 'no_changes'
         run: |
+          set -euo pipefail
           echo "Back-merging master into dev..."
           git checkout dev
 
           git pull origin dev
 
-          if ! git merge --no-ff master -m "Back-merge master into dev
+          if ! git merge master -m "Back-merge master into dev
 
           Synchronized dev with master after promotion
           Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"; then
@@ -208,6 +225,7 @@ jobs:
       - name: Push dev
         if: steps.check_ahead.outputs.status != 'no_changes'
         run: |
+          set -euo pipefail
           echo "Pushing dev to origin..."
           if ! git push origin dev; then
             echo "❌ ERROR: Failed to push dev"
@@ -218,6 +236,7 @@ jobs:
       - name: Promotion summary
         if: steps.check_ahead.outputs.status != 'no_changes'
         run: |
+          set -euo pipefail
           echo ""
           echo "=========================================="
           echo "✓ PROMOTION COMPLETED SUCCESSFULLY"
@@ -232,6 +251,7 @@ jobs:
       - name: No changes needed
         if: steps.check_ahead.outputs.status == 'no_changes'
         run: |
+          set -euo pipefail
           echo ""
           echo "=========================================="
           echo "⚠️  NO PROMOTION NEEDED"
