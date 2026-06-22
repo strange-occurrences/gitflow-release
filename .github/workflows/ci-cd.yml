@@ -270,11 +270,11 @@ jobs:
             --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson run_migration '${{ inputs.run_migration || false }}' \
             --argjson run_public_health_checks '${{ inputs.run_public_health_checks || false }}' \
-            --argjson fe '${{ needs.changes.outputs.frontend }}' \
-            --argjson be '${{ needs.changes.outputs.backend }}' \
-            --argjson in '${{ needs.changes.outputs.infra }}' \
-            --argjson do '${{ needs.changes.outputs.docs }}' \
-            --argjson bo '${{ needs.changes.outputs.bot }}' \
+            --argjson c_fe '${{ needs.changes.outputs.frontend }}' \
+            --argjson c_be '${{ needs.changes.outputs.backend }}' \
+            --argjson c_inf '${{ needs.changes.outputs.infra }}' \
+            --argjson c_docs '${{ needs.changes.outputs.docs }}' \
+            --argjson c_bot '${{ needs.changes.outputs.bot }}' \
             --arg frontend "$(ref frontend "$FE")" \
             --arg backend  "$(ref backend  "$BE")" \
             --arg infra    "$(ref infra    "$IN")" \
@@ -286,7 +286,7 @@ jobs:
               created_at: $created_at,
               run_migration: $run_migration,
               run_public_health_checks: $run_public_health_checks,
-              changed: { frontend: $fe, backend: $be, infra: $in, docs: $do, bot: $bo },
+              changed: { frontend: $c_fe, backend: $c_be, infra: $c_inf, docs: $c_docs, bot: $c_bot },
               images: {
                 "fakeapp-frontend": $frontend,
                 "fakeapp-backend":  $backend,
@@ -300,7 +300,7 @@ jobs:
         run: |
           set -euo pipefail
           CATALOG=$(jq -c '[.services[].image] | sort' infra/contracts/services.json)
-          MANIFEST=$(jq -c '[.images | keys] | sort' release-manifest.json)
+          MANIFEST=$(jq -c '.images | keys | sort' release-manifest.json)
           if [ "$CATALOG" != "$MANIFEST" ]; then
             echo "::error::release-manifest image keys drifted from infra/contracts/services.json"
             echo "catalog : $CATALOG"
