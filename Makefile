@@ -41,7 +41,7 @@ create-conflict: ## Create a merge conflict between master and dev branches
 simulate-change: ## Simulate a change to a component (COMPONENT=<frontend|backend|infra|docs|bot> [MSG=...]); stages it, you commit & push
 	@test -n "$(COMPONENT)" || { echo "Usage: make simulate-change COMPONENT=<frontend|backend|infra|docs|bot> [MSG=...]"; exit 1; }
 	@test -d "$(COMPONENT)" || { echo "ERROR: component '$(COMPONENT)' not found"; exit 1; }
-	@printf '- %s %s: %s\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(COMPONENT)" "$(if $(MSG),$(MSG),routine update)" >> $(COMPONENT)/CHANGELOG.md
+	@echo "- $$(date -u +%Y-%m-%dT%H:%M:%SZ) $(COMPONENT): $(if $(MSG),$(MSG),routine update)" >> $(COMPONENT)/CHANGELOG.md
 	@git add $(COMPONENT)/CHANGELOG.md
 	@echo "Staged change to $(COMPONENT)/CHANGELOG.md on branch $$(git rev-parse --abbrev-ref HEAD)."
 	@echo "Commit and push to trigger ci-cd.yml, e.g.:"
