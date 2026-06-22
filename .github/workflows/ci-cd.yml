@@ -164,7 +164,7 @@ jobs:
 
   build-frontend:
     needs: [changes, frontend-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.frontend == 'true')
+    if: !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.frontend-check.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -179,7 +179,7 @@ jobs:
 
   build-backend:
     needs: [changes, backend-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.backend == 'true')
+    if: !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.backend-check.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -194,7 +194,7 @@ jobs:
 
   build-bot:
     needs: [changes, bot-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.bot == 'true')
+    if: !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.bot-check.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -209,7 +209,7 @@ jobs:
 
   build-infra:
     needs: [changes, infra-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.infra == 'true')
+    if: !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.infra-check.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -224,7 +224,7 @@ jobs:
 
   build-docs:
     needs: [changes, docs-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.docs == 'true')
+    if: !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.docs-check.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
