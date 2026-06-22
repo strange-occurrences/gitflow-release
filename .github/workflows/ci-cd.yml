@@ -1,0 +1,343 @@
+# ──────────────────────────────────────────────────────────────────────────
+# ci-cd.yml — FAKE push pipeline for the gitflow-release demo repo
+#
+# Mirrors the shape of the real premapp ci-cd.yml (changes → checks → builds
+# → manifest → dispatch) but with dependency-free FAKE actions across five
+# component folders: frontend, backend, infra, docs, bot.  No images are
+# pushed; "digests" are sha256 of each component's CHANGELOG.md.
+#
+# Pipeline:
+#   changes ──→ frontend-check ─→ build-frontend ──┐
+#           ├─→ backend-check  ─→ build-backend  ──┤
+#           ├─→ bot-check      ─→ build-bot      ──┼── create-manifest ── dispatch-deploy
+#           ├─→ infra-check    ─→ build-infra    ──┤   (echo-only)
+#           └─→ docs-check     ─→ build-docs     ──┘
+#
+#   • push to dev     → only changed components build → dispatch report
+#   • push to master  → full_rebuild: all components build → dispatch report
+#   • workflow_dispatch → manual run with full_rebuild / perform_deploy
+#
+# Environment mapping:  master → prod,  everything else → dev
+# ──────────────────────────────────────────────────────────────────────────
+
+name: CI/CD (fake)
+
+on:
+  push:
+    branches: [dev, master]
+  workflow_dispatch:
+    inputs:
+      full_rebuild:
+        description: "Force rebuild all components"
+        required: false
+        type: boolean
+        default: false
+      run_migration:
+        description: "Run migration (fake flag)"
+        required: false
+        type: boolean
+        default: false
+      run_public_health_checks:
+        description: "Run public health checks (fake flag)"
+        required: false
+        type: boolean
+        default: false
+      perform_deploy:
+        description: "Run the (echo-only) deploy report"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# ══════════════════════════════════════════════════════════════════════════
+# JOBS
+# ══════════════════════════════════════════════════════════════════════════
+
+jobs:
+
+  # ── changes ────────────────────────────────────────────────────────────
+  # Single path-detection gate for the pipeline + image_owner + full_rebuild.
+  # ────────────────────────────────────────────────────────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend:     ${{ steps.filter.outputs.frontend }}
+      backend:      ${{ steps.filter.outputs.backend }}
+      infra:        ${{ steps.filter.outputs.infra }}
+      docs:         ${{ steps.filter.outputs.docs }}
+      bot:          ${{ steps.filter.outputs.bot }}
+      image_owner:  ${{ steps.meta.outputs.image_owner }}
+      full_rebuild: ${{ steps.meta.outputs.full_rebuild }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # workflow_dispatch: compare against default branch for sensible path detection.
+          filters: |
+            frontend:
+              - 'frontend/**'
+            backend:
+              - 'backend/**'
+            infra:
+              - 'infra/**'
+            docs:
+              - 'docs/**'
+            bot:
+              - 'bot/**'
+      - id: meta
+        run: |
+          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image_owner=$OWNER" >> "$GITHUB_OUTPUT"
+          FULL_REBUILD="false"
+          if [ "$GITHUB_REF" = "refs/heads/master" ] || [ "${{ inputs.full_rebuild }}" = "true" ]; then
+            FULL_REBUILD="true"
+          fi
+          echo "full_rebuild=$FULL_REBUILD" >> "$GITHUB_OUTPUT"
+
+  # ── Quality gates ("check" group) ──────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────
+
+  frontend-check:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --check frontend/src/index.js
+
+  backend-check:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m py_compile backend/app/main.py
+
+  bot-check:
+    needs: changes
+    if: needs.changes.outputs.bot == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --check bot/src/index.js
+
+  infra-check:
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.9.5"
+      - run: terraform -chdir=infra fmt -check -diff
+      - run: terraform -chdir=infra init -backend=false
+      - run: terraform -chdir=infra validate
+
+  docs-check:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify docs have a Usage section
+        run: grep -q '^## Usage' docs/README.md
+
+  # ── Image builds ("build" group) ────────────────────────────────────────
+  # Each build depends on its component's quality gate so a broken check
+  # prevents the corresponding "image" from being produced.  Digests are
+  # fake (sha256 of the component's CHANGELOG.md).
+  # ────────────────────────────────────────────────────────────────────────
+
+  build-frontend:
+    needs: [changes, frontend-check]
+    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.frontend == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: build
+        run: |
+          set -euo pipefail
+          DIGEST="sha256:$(sha256sum frontend/CHANGELOG.md | awk '{print $1}')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-frontend@$DIGEST"
+
+  build-backend:
+    needs: [changes, backend-check]
+    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.backend == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: build
+        run: |
+          set -euo pipefail
+          DIGEST="sha256:$(sha256sum backend/CHANGELOG.md | awk '{print $1}')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-backend@$DIGEST"
+
+  build-bot:
+    needs: [changes, bot-check]
+    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.bot == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: build
+        run: |
+          set -euo pipefail
+          DIGEST="sha256:$(sha256sum bot/CHANGELOG.md | awk '{print $1}')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-bot@$DIGEST"
+
+  build-infra:
+    needs: [changes, infra-check]
+    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.infra == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: build
+        run: |
+          set -euo pipefail
+          DIGEST="sha256:$(sha256sum infra/CHANGELOG.md | awk '{print $1}')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-infra@$DIGEST"
+
+  build-docs:
+    needs: [changes, docs-check]
+    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.docs == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: build
+        run: |
+          set -euo pipefail
+          DIGEST="sha256:$(sha256sum docs/CHANGELOG.md | awk '{print $1}')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-docs@$DIGEST"
+
+  # ── Release manifest ───────────────────────────────────────────────────
+  # Captures all built image refs + deploy-policy flags into a single JSON
+  # artifact, validated against infra/contracts/services.json.
+  # ────────────────────────────────────────────────────────────────────────
+
+  create-manifest:
+    needs:
+      [changes,
+       frontend-check, backend-check, infra-check, docs-check, bot-check,
+       build-frontend, build-backend, build-infra, build-docs, build-bot]
+    if: always() && !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release manifest
+        env:
+          OWNER: ${{ needs.changes.outputs.image_owner }}
+          FE: ${{ needs.build-frontend.outputs.digest }}
+          BE: ${{ needs.build-backend.outputs.digest }}
+          IN: ${{ needs.build-infra.outputs.digest }}
+          DO: ${{ needs.build-docs.outputs.digest }}
+          BO: ${{ needs.build-bot.outputs.digest }}
+        run: |
+          set -euo pipefail
+          ref() { [ -n "$2" ] && echo "ghcr.io/$OWNER/fakeapp-$1@$2" || echo ""; }
+          jq -n \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg branch "${GITHUB_REF#refs/heads/}" \
+            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson run_migration '${{ inputs.run_migration || false }}' \
+            --argjson run_public_health_checks '${{ inputs.run_public_health_checks || false }}' \
+            --argjson c_fe '${{ needs.changes.outputs.frontend }}' \
+            --argjson c_be '${{ needs.changes.outputs.backend }}' \
+            --argjson c_inf '${{ needs.changes.outputs.infra }}' \
+            --argjson c_docs '${{ needs.changes.outputs.docs }}' \
+            --argjson c_bot '${{ needs.changes.outputs.bot }}' \
+            --arg frontend "$(ref frontend "$FE")" \
+            --arg backend  "$(ref backend  "$BE")" \
+            --arg infra    "$(ref infra    "$IN")" \
+            --arg docs     "$(ref docs     "$DO")" \
+            --arg bot      "$(ref bot      "$BO")" \
+            '{
+              commit_sha: $commit_sha,
+              branch: $branch,
+              created_at: $created_at,
+              run_migration: $run_migration,
+              run_public_health_checks: $run_public_health_checks,
+              changed: { frontend: $c_fe, backend: $c_be, infra: $c_inf, docs: $c_docs, bot: $c_bot },
+              images: {
+                "fakeapp-frontend": $frontend,
+                "fakeapp-backend":  $backend,
+                "fakeapp-infra":    $infra,
+                "fakeapp-docs":     $docs,
+                "fakeapp-bot":      $bot
+              }
+            }' > release-manifest.json
+
+      - name: Validate manifest against services catalog
+        run: |
+          set -euo pipefail
+          CATALOG=$(jq -c '[.services[].image] | sort' infra/contracts/services.json)
+          MANIFEST=$(jq -c '.images | keys | sort' release-manifest.json)
+          if [ "$CATALOG" != "$MANIFEST" ]; then
+            echo "::error::release-manifest image keys drifted from infra/contracts/services.json"
+            echo "catalog : $CATALOG"
+            echo "manifest: $MANIFEST"
+            exit 1
+          fi
+          cat release-manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release-manifest.json
+
+  # ── Dispatch deploy (echo-only) ─────────────────────────────────────────
+  # The real pipeline fires deploy.yml via `gh workflow run`.  This fake
+  # version just downloads the manifest and reports what it would deploy.
+  # ────────────────────────────────────────────────────────────────────────
+
+  dispatch-deploy:
+    needs: [create-manifest, infra-check]
+    if: |
+      always() &&
+      needs.create-manifest.result == 'success' &&
+      needs.infra-check.result != 'failure' &&
+      contains(fromJson('["dev","master"]'), github.ref_name) &&
+      (github.event_name != 'workflow_dispatch' || inputs.perform_deploy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-manifest
+      - name: Report (fake) deploy
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          ENV="dev"; [ "$BRANCH" = "master" ] && ENV="prod"
+          echo "=== release-manifest.json ==="
+          jq . release-manifest.json
+          echo ""
+          echo "Would dispatch deploy.yml → environment=$ENV commit=$GITHUB_SHA (echo-only: no deploy.yml in this demo)"
