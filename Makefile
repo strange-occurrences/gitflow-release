@@ -1,4 +1,4 @@
-.PHONY: help create-conflict simulate-change
+.PHONY: help create-conflict simulate-change update-submodule
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -46,3 +46,17 @@ simulate-change: ## Simulate a change to a component (COMPONENT=<frontend|backen
 	@echo "Staged change to $(COMPONENT)/CHANGELOG.md on branch $$(git rev-parse --abbrev-ref HEAD)."
 	@echo "Commit and push to trigger ci-cd.yml, e.g.:"
 	@echo "  git commit -m 'chore($(COMPONENT)): simulate change' && git push"
+
+update-submodule: ## Move the subcomponent gitlink to the latest commit on its tracked branch (master); stages it, you commit & push
+	@echo "Updating subcomponent (dummy-service) to the latest commit on master..."
+	@echo ""
+	@echo "Before:"
+	@git submodule status
+	@echo ""
+	@git submodule update --remote subcomponent
+	@git add subcomponent
+	@echo ""
+	@echo "After:"
+	@git submodule status
+	@echo ""
+	@if git diff --cached --quiet -- subcomponent; then echo "subcomponent is already at the latest commit — nothing staged."; else echo "Staged gitlink bump for subcomponent on branch $$(git rev-parse --abbrev-ref HEAD)."; echo "Commit and push to update the reference, e.g.:"; echo "  git commit -m 'chore(submodule): bump subcomponent to latest' && git push"; fi
