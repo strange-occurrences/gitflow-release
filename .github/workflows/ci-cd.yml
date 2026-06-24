@@ -65,17 +65,19 @@ permissions:
 jobs:
 
   # ── changes ────────────────────────────────────────────────────────────
-  # Single path-detection gate for the pipeline + image_owner + full_rebuild.
+  # Path-detection gate. On master / workflow_dispatch / full_rebuild input,
+  # every component is treated as changed (full rebuild of all gates); on a
+  # dev push only paths-filter-detected components are. Also exports image_owner.
   # ────────────────────────────────────────────────────────────────────────
   changes:
     runs-on: ubuntu-latest
     outputs:
-      frontend:     ${{ steps.filter.outputs.frontend }}
-      backend:      ${{ steps.filter.outputs.backend }}
-      infra:        ${{ steps.filter.outputs.infra }}
-      docs:         ${{ steps.filter.outputs.docs }}
-      bot:          ${{ steps.filter.outputs.bot }}
-      subcomponent: ${{ steps.filter.outputs.subcomponent }}
+      frontend:     ${{ steps.meta.outputs.frontend }}
+      backend:      ${{ steps.meta.outputs.backend }}
+      infra:        ${{ steps.meta.outputs.infra }}
+      docs:         ${{ steps.meta.outputs.docs }}
+      bot:          ${{ steps.meta.outputs.bot }}
+      subcomponent: ${{ steps.meta.outputs.subcomponent }}
       image_owner:  ${{ steps.meta.outputs.image_owner }}
       full_rebuild: ${{ steps.meta.outputs.full_rebuild }}
     steps:
@@ -83,7 +85,7 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
-          # workflow_dispatch: compare against default branch for sensible path detection.
+          # paths-filter feeds the meta step; on full_rebuild the meta step forces all flags true.
           filters: |
             frontend:
               - 'frontend/**'
@@ -102,11 +104,29 @@ jobs:
         run: |
           OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           echo "image_owner=$OWNER" >> "$GITHUB_OUTPUT"
+          # Full rebuild (=> every component treated as changed) on:
+          #   push to master | any manual run (workflow_dispatch) | full_rebuild input
           FULL_REBUILD="false"
-          if [ "$GITHUB_REF" = "refs/heads/master" ] || [ "${{ inputs.full_rebuild }}" = "true" ]; then
+          if [ "$GITHUB_REF" = "refs/heads/master" ] \
+             || [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] \
+             || [ "${{ inputs.full_rebuild }}" = "true" ]; then
             FULL_REBUILD="true"
           fi
           echo "full_rebuild=$FULL_REBUILD" >> "$GITHUB_OUTPUT"
+          # Effective "changed" per component = path-filter result, forced true on full rebuild.
+          emit() {
+            if [ "$FULL_REBUILD" = "true" ]; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=$2" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          emit frontend     "${{ steps.filter.outputs.frontend }}"
+          emit backend      "${{ steps.filter.outputs.backend }}"
+          emit infra        "${{ steps.filter.outputs.infra }}"
+          emit docs         "${{ steps.filter.outputs.docs }}"
+          emit bot          "${{ steps.filter.outputs.bot }}"
+          emit subcomponent "${{ steps.filter.outputs.subcomponent }}"
 
   # ── Quality gates ("check" group) ──────────────────────────────────────
   # ────────────────────────────────────────────────────────────────────────
