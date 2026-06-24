@@ -1,0 +1,4 @@
+[submodule "subcomponent"]
+	path = subcomponent
+	url = https://github.com/strange-occurrences/dummy-service/
+	branch = master

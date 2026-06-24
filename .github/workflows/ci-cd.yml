@@ -2,16 +2,19 @@
 # ci-cd.yml — FAKE push pipeline for the gitflow-release demo repo
 #
 # Mirrors the shape of the real premapp ci-cd.yml (changes → checks → builds
-# → manifest → dispatch) but with dependency-free FAKE actions across five
-# component folders: frontend, backend, infra, docs, bot.  No images are
-# pushed; "digests" are sha256 of each component's CHANGELOG.md.
+# → manifest → dispatch) but with dependency-free FAKE actions across six
+# components: frontend, backend, infra, docs, bot (in-repo) + subcomponent
+# (a git submodule pinned to master of strange-occurrences/dummy-service).
+# No images are pushed; each "image" value is its component's git commit
+# (the subcomponent uses the gitlink commit the submodule is pinned to).
 #
 # Pipeline:
 #   changes ──→ frontend-check ─→ build-frontend ──┐
 #           ├─→ backend-check  ─→ build-backend  ──┤
 #           ├─→ bot-check      ─→ build-bot      ──┼── create-manifest ── dispatch-deploy
 #           ├─→ infra-check    ─→ build-infra    ──┤   (echo-only)
-#           └─→ docs-check     ─→ build-docs     ──┘
+#           ├─→ docs-check     ─→ build-docs     ──┤
+#           └─→ (submodule)    ─→ submodule-component-check ─→ build-submodule-component ──┘
 #
 #   • push to dev     → only changed components build → dispatch report
 #   • push to master  → full_rebuild: all components build → dispatch report
@@ -72,6 +75,7 @@ jobs:
       infra:        ${{ steps.filter.outputs.infra }}
       docs:         ${{ steps.filter.outputs.docs }}
       bot:          ${{ steps.filter.outputs.bot }}
+      subcomponent: ${{ steps.filter.outputs.subcomponent }}
       image_owner:  ${{ steps.meta.outputs.image_owner }}
       full_rebuild: ${{ steps.meta.outputs.full_rebuild }}
     steps:
@@ -91,6 +95,9 @@ jobs:
               - 'docs/**'
             bot:
               - 'bot/**'
+            subcomponent:
+              - 'subcomponent'
+              - '.gitmodules'
       - id: meta
         run: |
           OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
@@ -156,86 +163,133 @@ jobs:
       - name: Verify docs have a Usage section
         run: grep -q '^## Usage' docs/README.md
 
+  submodule-component-check:
+    needs: changes
+    if: needs.changes.outputs.subcomponent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # dummy-service is public → no SUBMODULE_PAT needed; recursive so the
+      # check runs against the actual submodule content (also catches an
+      # uninitialized submodule, which would leave subcomponent/ empty).
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Verify submodule service definition
+        run: |
+          set -euo pipefail
+          test -f subcomponent/Dockerfile
+          grep -q '^FROM ' subcomponent/Dockerfile
+          test -s subcomponent/version.txt
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' subcomponent/version.txt
+          grep -q '^services:' subcomponent/docker-compose.yml
+
   # ── Image builds ("build" group) ────────────────────────────────────────
   # Each build depends on its component's quality gate so a broken check
-  # prevents the corresponding "image" from being produced.  Digests are
-  # fake (sha256 of the component's CHANGELOG.md).
+  # prevents the corresponding "image" from being produced.  Each job's
+  # "image" value is its component's git commit (last commit touching the
+  # folder); build-submodule-component uses the pinned submodule commit.
   # ────────────────────────────────────────────────────────────────────────
 
   build-frontend:
     needs: [changes, frontend-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.frontend == 'true')
+    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.frontend-check.result == 'success')"
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      commit: ${{ steps.build.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         run: |
           set -euo pipefail
-          DIGEST="sha256:$(sha256sum frontend/CHANGELOG.md | awk '{print $1}')"
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-frontend@$DIGEST"
+          # image value = the git commit that last touched this component
+          COMMIT="$(git log -1 --format=%H -- frontend/)"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-frontend@$COMMIT"
 
   build-backend:
     needs: [changes, backend-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.backend == 'true')
+    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.backend-check.result == 'success')"
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      commit: ${{ steps.build.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         run: |
           set -euo pipefail
-          DIGEST="sha256:$(sha256sum backend/CHANGELOG.md | awk '{print $1}')"
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-backend@$DIGEST"
+          # image value = the git commit that last touched this component
+          COMMIT="$(git log -1 --format=%H -- backend/)"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-backend@$COMMIT"
 
   build-bot:
     needs: [changes, bot-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.bot == 'true')
+    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.bot-check.result == 'success')"
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      commit: ${{ steps.build.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         run: |
           set -euo pipefail
-          DIGEST="sha256:$(sha256sum bot/CHANGELOG.md | awk '{print $1}')"
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-bot@$DIGEST"
+          # image value = the git commit that last touched this component
+          COMMIT="$(git log -1 --format=%H -- bot/)"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-bot@$COMMIT"
 
   build-infra:
     needs: [changes, infra-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.infra == 'true')
+    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.infra-check.result == 'success')"
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      commit: ${{ steps.build.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         run: |
           set -euo pipefail
-          DIGEST="sha256:$(sha256sum infra/CHANGELOG.md | awk '{print $1}')"
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-infra@$DIGEST"
+          # image value = the git commit that last touched this component
+          COMMIT="$(git log -1 --format=%H -- infra/)"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-infra@$COMMIT"
 
   build-docs:
     needs: [changes, docs-check]
-    if: always() && !failure() && !cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.docs == 'true')
+    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.docs-check.result == 'success')"
     runs-on: ubuntu-latest
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      commit: ${{ steps.build.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
       - id: build
         run: |
           set -euo pipefail
-          DIGEST="sha256:$(sha256sum docs/CHANGELOG.md | awk '{print $1}')"
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-docs@$DIGEST"
+          # image value = the git commit that last touched this component
+          COMMIT="$(git log -1 --format=%H -- docs/)"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-docs@$COMMIT"
+
+  build-submodule-component:
+    needs: [changes, submodule-component-check]
+    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.submodule-component-check.result == 'success')"
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.build.outputs.commit }}
+    steps:
+      # dummy-service is public → no SUBMODULE_PAT needed; recursive in case
+      # it ever nests its own submodules.
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - id: build
+        run: |
+          set -euo pipefail
+          # image value = "the used commit of the sub module" — the gitlink
+          # commit the submodule is pinned to in this repo.
+          COMMIT="$(git rev-parse HEAD:subcomponent)"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-subcomponent@$COMMIT"
 
   # ── Release manifest ───────────────────────────────────────────────────
   # Captures all built image refs + deploy-policy flags into a single JSON
@@ -246,7 +300,9 @@ jobs:
     needs:
       [changes,
        frontend-check, backend-check, infra-check, docs-check, bot-check,
-       build-frontend, build-backend, build-infra, build-docs, build-bot]
+       submodule-component-check,
+       build-frontend, build-backend, build-infra, build-docs, build-bot,
+       build-submodule-component]
     if: always() && !failure() && !cancelled()
     runs-on: ubuntu-latest
     steps:
@@ -255,13 +311,15 @@ jobs:
       - name: Build release manifest
         env:
           OWNER: ${{ needs.changes.outputs.image_owner }}
-          FE: ${{ needs.build-frontend.outputs.digest }}
-          BE: ${{ needs.build-backend.outputs.digest }}
-          IN: ${{ needs.build-infra.outputs.digest }}
-          DO: ${{ needs.build-docs.outputs.digest }}
-          BO: ${{ needs.build-bot.outputs.digest }}
+          FE: ${{ needs.build-frontend.outputs.commit }}
+          BE: ${{ needs.build-backend.outputs.commit }}
+          IN: ${{ needs.build-infra.outputs.commit }}
+          DO: ${{ needs.build-docs.outputs.commit }}
+          BO: ${{ needs.build-bot.outputs.commit }}
+          SUB: ${{ needs.build-submodule-component.outputs.commit }}
         run: |
           set -euo pipefail
+          # each image value is its component's git commit (subcomponent = pinned submodule commit)
           ref() { [ -n "$2" ] && echo "ghcr.io/$OWNER/fakeapp-$1@$2" || echo ""; }
           jq -n \
             --arg commit_sha "$GITHUB_SHA" \
@@ -274,24 +332,27 @@ jobs:
             --argjson c_inf '${{ needs.changes.outputs.infra }}' \
             --argjson c_docs '${{ needs.changes.outputs.docs }}' \
             --argjson c_bot '${{ needs.changes.outputs.bot }}' \
+            --argjson c_sub '${{ needs.changes.outputs.subcomponent }}' \
             --arg frontend "$(ref frontend "$FE")" \
             --arg backend  "$(ref backend  "$BE")" \
             --arg infra    "$(ref infra    "$IN")" \
             --arg docs     "$(ref docs     "$DO")" \
             --arg bot      "$(ref bot      "$BO")" \
+            --arg subcomponent "$(ref subcomponent "$SUB")" \
             '{
               commit_sha: $commit_sha,
               branch: $branch,
               created_at: $created_at,
               run_migration: $run_migration,
               run_public_health_checks: $run_public_health_checks,
-              changed: { frontend: $c_fe, backend: $c_be, infra: $c_inf, docs: $c_docs, bot: $c_bot },
+              changed: { frontend: $c_fe, backend: $c_be, infra: $c_inf, docs: $c_docs, bot: $c_bot, subcomponent: $c_sub },
               images: {
                 "fakeapp-frontend": $frontend,
                 "fakeapp-backend":  $backend,
                 "fakeapp-infra":    $infra,
                 "fakeapp-docs":     $docs,
-                "fakeapp-bot":      $bot
+                "fakeapp-bot":      $bot,
+                "fakeapp-subcomponent": $subcomponent
               }
             }' > release-manifest.json
 
