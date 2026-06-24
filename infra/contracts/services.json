@@ -19,6 +19,10 @@
     "bot": {
       "image": "fakeapp-bot",
       "class": "application"
+    },
+    "subcomponent": {
+      "image": "fakeapp-subcomponent",
+      "class": "application"
     }
   }
 }
