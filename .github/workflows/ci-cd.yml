@@ -14,7 +14,7 @@
 #           ├─→ bot-check      ─→ build-bot      ──┼── create-manifest ── dispatch-deploy
 #           ├─→ infra-check    ─→ build-infra    ──┤   (echo-only)
 #           ├─→ docs-check     ─→ build-docs     ──┤
-#           └─→ (submodule)    ─→ build-submodule-component ──┘
+#           └─→ (submodule)    ─→ submodule-component-check ─→ build-submodule-component ──┘
 #
 #   • push to dev     → only changed components build → dispatch report
 #   • push to master  → full_rebuild: all components build → dispatch report
@@ -163,12 +163,31 @@ jobs:
       - name: Verify docs have a Usage section
         run: grep -q '^## Usage' docs/README.md
 
+  submodule-component-check:
+    needs: changes
+    if: needs.changes.outputs.subcomponent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # dummy-service is public → no SUBMODULE_PAT needed; recursive so the
+      # check runs against the actual submodule content (also catches an
+      # uninitialized submodule, which would leave subcomponent/ empty).
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Verify submodule service definition
+        run: |
+          set -euo pipefail
+          test -f subcomponent/Dockerfile
+          grep -q '^FROM ' subcomponent/Dockerfile
+          test -s subcomponent/version.txt
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' subcomponent/version.txt
+          grep -q '^services:' subcomponent/docker-compose.yml
+
   # ── Image builds ("build" group) ────────────────────────────────────────
   # Each build depends on its component's quality gate so a broken check
   # prevents the corresponding "image" from being produced.  Each job's
   # "image" value is its component's git commit (last commit touching the
-  # folder).  build-submodule-component has no check gate — it depends only
-  # on the changes job and runs when subcomponent changed or full_rebuild.
+  # folder); build-submodule-component uses the pinned submodule commit.
   # ────────────────────────────────────────────────────────────────────────
 
   build-frontend:
@@ -252,8 +271,8 @@ jobs:
           echo "Fake-built: ghcr.io/${{ needs.changes.outputs.image_owner }}/fakeapp-docs@$COMMIT"
 
   build-submodule-component:
-    needs: [changes]
-    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.changes.outputs.subcomponent == 'true')"
+    needs: [changes, submodule-component-check]
+    if: "!cancelled() && (needs.changes.outputs.full_rebuild == 'true' || needs.submodule-component-check.result == 'success')"
     runs-on: ubuntu-latest
     outputs:
       commit: ${{ steps.build.outputs.commit }}
@@ -281,6 +300,7 @@ jobs:
     needs:
       [changes,
        frontend-check, backend-check, infra-check, docs-check, bot-check,
+       submodule-component-check,
        build-frontend, build-backend, build-infra, build-docs, build-bot,
        build-submodule-component]
     if: always() && !failure() && !cancelled()
