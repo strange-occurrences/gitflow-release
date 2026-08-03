@@ -1,4 +1,4 @@
-.PHONY: help create-conflict simulate-change update-submodule
+.PHONY: help create-conflict simulate-change update-submodule simulate-migrations demo-migrate demo-db-status
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -46,6 +46,20 @@ simulate-change: ## Simulate a change to a component (COMPONENT=<frontend|backen
 	@echo "Staged change to $(COMPONENT)/CHANGELOG.md on branch $$(git rev-parse --abbrev-ref HEAD)."
 	@echo "Commit and push to trigger ci-cd.yml, e.g.:"
 	@echo "  git commit -m 'chore($(COMPONENT)): simulate change' && git push"
+
+simulate-migrations: ## Run the ci-cd changes-logic scenarios; asserts run_migration/migrations_changed wiring
+	@bash scripts/simulate-changes.sh --assert
+
+demo-migrate: ## Run the dummy Alembic migrations against the SQLite demo db
+	@cd backend/aci && uv run --with alembic alembic upgrade head
+	@echo "Tables in backend/aci/demo.db:"
+	@sqlite3 backend/aci/demo.db '.tables'
+
+demo-db-status: ## Show the dummy SQLite db alembic revision + tables
+	@echo "Alembic current revision:"
+	@cd backend/aci && uv run --with alembic alembic current 2>/dev/null || true
+	@echo "Tables in backend/aci/demo.db:"
+	@sqlite3 backend/aci/demo.db '.tables'
 
 update-submodule: ## Move the subcomponent gitlink to the latest commit on its tracked branch (master); stages it, you commit & push
 	@echo "Updating subcomponent (dummy-service) to the latest commit on master..."
