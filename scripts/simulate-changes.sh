@@ -15,7 +15,12 @@
 #       [--run-migration] [--assert]
 #
 #   --files '…'        simulate a changed-file set directly (history-independent)
-#   --base/--head REF  diff two real refs (paths-filter equivalent on a push)
+#   --base/--head REF  diff two real refs (paths-filter equivalent on a push).
+#                      NOTE: with the ci-cd.yml `base: ''` config, dorny diffs a
+#                      dev push against merge-base(HEAD, master) — everything since
+#                      the last master merge — NOT the previous commit. Pass the
+#                      merge-base as BASE to reproduce the real signal; pass the
+#                      previous commit to model a per-push diff.
 #   --run-migration    actually run `alembic upgrade head` against demo.db when task=true
 #   --assert           run the built-in scenarios and exit non-zero on any mismatch
 # ──────────────────────────────────────────────────────────────────────────
@@ -171,6 +176,11 @@ if [ "$ASSERT" = true ]; then
     "migrations_changed=true" "Migration task: true (policy=true, migrations_changed=true)" \
     || rc=1
 
+  # Submodule-only bump = different signal. Models the case where the diff
+  # contains ONLY the subcomponent gitlink — e.g. a master promotion, or a dev
+  # push once master has caught up. NOTE: on a dev push with base '' the diff is
+  # merge-base(dev, master)..HEAD, so pending alembic files still flip
+  # migrations=true until they're merged to master (see ci-cd.yml base comment).
   run_scenario "submodule-only bump = different signal" \
     --files 'subcomponent' \
     expect \

@@ -88,8 +88,13 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
-          # Push events: dorny handles github.event.before naturally.
-          # workflow_dispatch: compare against default branch for sensible path detection.
+          # base semantics (dorny/paths-filter @v4): '' falls back to the repo
+          # default branch (master). Push to master → base resolves to the pushed
+          # branch → diff against the most recent commit before the push (pre-push
+          # master) — the #746 fix. Push to dev → merge-base(dev, master)..HEAD,
+          # i.e. EVERYTHING accumulated on dev since the last master merge, not
+          # just this push's commits. workflow_dispatch → diff against the default
+          # branch for sensible path detection.
           base: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || '' }}
           # paths-filter feeds the meta step; on full_rebuild the meta step forces all flags true.
           # `migrations` stays a raw output (not folded) — it only gates the deploy-side
