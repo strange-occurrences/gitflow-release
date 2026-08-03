@@ -4,8 +4,9 @@ Revision ID: b1c2d3e4f5a6
 Revises: e8f9a0b1c2d3
 Create Date: 2026-07-21 01:00:00
 
-Dummy migration mirroring the real premapp promotion
-(backend/aci/alembic/versions/2026_07_21_0100-b1c2d3e4f5a6_add_user_feature_flags.py).
+Dummy migration #2 (numbered scheme: migration_1, migration_2, migration_3, ...
+so experiments can grow by appending migration_N). Mirrors the real premapp
+promotion revision (backend/aci/alembic/versions/2026_07_21_0100-b1c2d3e4f5a6_add_user_feature_flags.py).
 """
 from typing import Sequence, Union
 

@@ -165,7 +165,7 @@ run_scenario() {
 if [ "$ASSERT" = true ]; then
   rc=0
   run_scenario "dev push adds alembic revision" \
-    --files 'backend/aci/alembic/versions/2026_06_18_0100-e8f9a0b1c2d3_add_admin_analytics_tables.py' \
+    --files 'backend/aci/alembic/versions/migration_1_add_admin_analytics_tables.py' \
     expect \
     "full_rebuild=false" "backend=true" "migrations=true" "run_migration=true" \
     "migrations_changed=true" "Migration task: true (policy=true, migrations_changed=true)" \
