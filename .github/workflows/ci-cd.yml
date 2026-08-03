@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 # ci-cd.yml — FAKE push pipeline for the gitflow-release demo repo
 #
-# Mirrors the shape of the real premapp ci-cd.yml (changes → checks → builds
+# Mirrors the shape of the real production ci-cd.yml (changes → checks → builds
 # → manifest → dispatch) but with dependency-free FAKE actions across six
 # components: frontend, backend, infra, docs, bot (in-repo) + subcomponent
 # (a git submodule pinned to master of strange-occurrences/dummy-service).
