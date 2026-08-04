@@ -81,6 +81,10 @@ jobs:
       # Raw paths-filter output (not folded into full_rebuild) so promotion
       # pushes to master still detect migrations from the actual diff.
       migrations:   ${{ steps.filter.outputs.migrations }}
+      # Submodule-internal migrations: the parent diff only sees the bare gitlink,
+      # so the submodule-migrations step diffs the submodule's backend/aci/alembic/**
+      # between the old and new gitlinks ('' when the step is skipped).
+      submodule_migrations: ${{ steps.submodule-migrations.outputs.changed }}
       image_owner:  ${{ steps.meta.outputs.image_owner }}
       full_rebuild: ${{ steps.meta.outputs.full_rebuild }}
     steps:
@@ -145,6 +149,53 @@ jobs:
           emit docs         "${{ steps.filter.outputs.docs }}"
           emit bot          "${{ steps.filter.outputs.bot }}"
           emit subcomponent "${{ steps.filter.outputs.subcomponent }}"
+
+      # Submodule pointer moved → check whether the migrations inside the
+      # submodule actually changed between the old and new gitlinks. The parent
+      # diff only ever sees the bare 'subcomponent' gitlink (mode 160000), so
+      # this is the only way to catch e.g. a bumped dummy-service that added a
+      # migration. Result stays RAW (like `migrations`): it only gates the
+      # deploy-side migration task, never the build set.
+      - id: submodule-migrations
+        if: steps.filter.outputs.subcomponent == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Same diff window dorny/paths-filter uses for `base: ''` (see the
+          # base comment above), so this is consistent with the `migrations` output:
+          #   push to master        → pre-push master (event.before)  [the #746 fix]
+          #   push to dev           → merge-base(HEAD, origin/master)
+          #   workflow_dispatch     → default branch (master)
+          git fetch origin --quiet
+          BASE=""
+          if [ "$EVENT_NAME" = "push" ]; then
+            if [ "$REF" = "refs/heads/master" ]; then
+              BASE="$EVENT_BEFORE"
+            else
+              BASE="$(git merge-base HEAD origin/master)"
+            fi
+          else
+            BASE="origin/$DEFAULT_BRANCH"
+          fi
+          OLD="$(git rev-parse "$BASE:subcomponent" 2>/dev/null || true)"
+          NEW="$(git rev-parse HEAD:subcomponent)"
+          if [ -z "$OLD" ] || [ "$OLD" = "$NEW" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Submodule internals are invisible to the parent diff — init the
+          # submodule and diff its migrations path between the two gitlinks.
+          git submodule update --init subcomponent --quiet
+          git -C subcomponent fetch origin --quiet 2>/dev/null || true
+          if git -C subcomponent diff --quiet "$OLD" "$NEW" -- backend/aci/alembic/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
   # ── Quality gates ("check" group) ──────────────────────────────────────
   # ────────────────────────────────────────────────────────────────────────
@@ -369,8 +420,12 @@ jobs:
             MIGRATIONS_CHANGED="true"
           else
             RUN_MIGRATION='true'
-            MIGRATIONS_CHANGED='${{ needs.changes.outputs.migrations }}'
-            [ "$MIGRATIONS_CHANGED" = "true" ] || MIGRATIONS_CHANGED="false"
+            MIGRATIONS_CHANGED="false"
+            # Primary-project migrations OR submodule-internal migrations (the
+            # latter only fires when the gitlink moved to a commit whose
+            # backend/aci/alembic/** changed — see the changes job).
+            [ '${{ needs.changes.outputs.migrations }}' = "true" ] && MIGRATIONS_CHANGED="true"
+            [ '${{ needs.changes.outputs.submodule_migrations }}' = "true" ] && MIGRATIONS_CHANGED="true"
           fi
 
           jq -n \

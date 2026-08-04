@@ -15,6 +15,10 @@
 #       [--run-migration] [--assert]
 #
 #   --files '…'        simulate a changed-file set directly (history-independent)
+#   --submodule-migrations true|false
+#                      simulate a submodule gitlink move whose migrations changed.
+#                      With --base/--head it is AUTO-DERIVED: diffs the submodule's
+#                      backend/aci/alembic/** between the gitlinks at BASE and HEAD.
 #   --base/--head REF  diff two real refs (paths-filter equivalent on a push).
 #                      NOTE: with the ci-cd.yml `base: ''` config, dorny diffs a
 #                      dev push against merge-base(HEAD, master) — everything since
@@ -33,6 +37,7 @@ EVENT=push
 BRANCH=dev
 RUN_MIGRATION_INPUT=true
 FULL_REBUILD_INPUT=false
+SUBMODULE_MIGRATIONS=false
 FILES=""
 FILES_SET=false
 BASE=""
@@ -46,6 +51,7 @@ while [ $# -gt 0 ]; do
     --branch) BRANCH="$2"; shift 2 ;;
     --run-migration-input) RUN_MIGRATION_INPUT="$2"; shift 2 ;;
     --full-rebuild-input) FULL_REBUILD_INPUT="$2"; shift 2 ;;
+    --submodule-migrations) SUBMODULE_MIGRATIONS="$2"; shift 2 ;;
     --files) FILES="$2"; FILES_SET=true; shift 2 ;;
     --base) BASE="$2"; shift 2 ;;
     --head) HEAD="$2"; shift 2 ;;
@@ -66,6 +72,16 @@ elif [ "$FILES_SET" = true ]; then
   fi
 elif [ -n "$BASE" ] && [ -n "$HEAD" ]; then
   mapfile -t CHANGED < <(git diff --name-only "$BASE" "$HEAD")
+  # Auto-derive submodule migration changes: diff the submodule's
+  # backend/aci/alembic/** between the gitlinks at BASE and HEAD
+  # (mirrors the ci-cd.yml submodule-migrations step).
+  OLD_GITLINK="$(git rev-parse "$BASE:subcomponent" 2>/dev/null || true)"
+  NEW_GITLINK="$(git rev-parse "$HEAD:subcomponent" 2>/dev/null || true)"
+  if [ -n "$OLD_GITLINK" ] && [ -n "$NEW_GITLINK" ] && [ "$OLD_GITLINK" != "$NEW_GITLINK" ]; then
+    if ! git -C subcomponent diff --quiet "$OLD_GITLINK" "$NEW_GITLINK" -- backend/aci/alembic/ 2>/dev/null; then
+      SUBMODULE_MIGRATIONS=true
+    fi
+  fi
 else
   echo "need --files or --base+--head" >&2
   exit 2
@@ -114,8 +130,9 @@ if [ "$EVENT" = workflow_dispatch ]; then
   MIGRATIONS_CHANGED=true
 else
   RUN_MIGRATION=true
-  MIGRATIONS_CHANGED="$MIGRATIONS"
-  [ "$MIGRATIONS_CHANGED" = true ] || MIGRATIONS_CHANGED=false
+  MIGRATIONS_CHANGED=false
+  [ "$MIGRATIONS" = true ] && MIGRATIONS_CHANGED=true
+  [ "$SUBMODULE_MIGRATIONS" = true ] && MIGRATIONS_CHANGED=true
 fi
 
 # 4. deploy-side effective migration task
@@ -128,7 +145,7 @@ fi
 if [ "$ASSERT" != true ]; then
   echo "event=$EVENT branch=$BRANCH full_rebuild=$FULL_REBUILD"
   echo "changed: frontend=$FE backend=$BE infra=$IN docs=$DO bot=$BO subcomponent=$SUB"
-  echo "migrations=$MIGRATIONS run_migration=$RUN_MIGRATION migrations_changed=$MIGRATIONS_CHANGED"
+  echo "migrations=$MIGRATIONS submodule_migrations=$SUBMODULE_MIGRATIONS run_migration=$RUN_MIGRATION migrations_changed=$MIGRATIONS_CHANGED"
   echo "Migration task: $TASK (policy=$RUN_MIGRATION, migrations_changed=$MIGRATIONS_CHANGED)"
 
   # optional: run the real dummy migrations when the task would run
@@ -185,8 +202,19 @@ if [ "$ASSERT" = true ]; then
     --files 'subcomponent' \
     expect \
     "full_rebuild=false" "subcomponent=true" "backend=false" "migrations=false" \
-    "run_migration=true" "migrations_changed=false" \
+    "submodule_migrations=false" "run_migration=true" "migrations_changed=false" \
     "Migration task: false (policy=true, migrations_changed=false)" \
+    || rc=1
+
+  # Submodule bump whose migrations changed → run_migrations must be true.
+  # Mirrors the ci-cd.yml submodule-migrations step: gitlink move + a diff in
+  # the submodule's backend/aci/alembic/** between old and new gitlinks.
+  run_scenario "submodule bump with changed migrations → run_migrations true" \
+    --files 'subcomponent' --submodule-migrations true \
+    expect \
+    "full_rebuild=false" "subcomponent=true" "backend=false" "migrations=false" \
+    "submodule_migrations=true" "migrations_changed=true" \
+    "Migration task: true (policy=true, migrations_changed=true)" \
     || rc=1
 
   run_scenario "unrelated docs change" \
