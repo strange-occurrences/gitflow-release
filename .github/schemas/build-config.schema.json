@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Build artifact config",
+  "type": "object",
+  "required": ["version", "environment", "aws", "terraform", "resources"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [1]
+    },
+    "environment": {
+      "type": "string",
+      "minLength": 1
+    },
+    "aws": {
+      "type": "object",
+      "required": ["account_id", "account_label", "region", "local_profile"],
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9]{12}$"
+        },
+        "account_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "region": {
+          "type": "string",
+          "minLength": 1
+        },
+        "local_profile": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "terraform": {
+      "type": "object",
+      "required": ["state_account_id", "workspace", "var_file", "backend_config"],
+      "additionalProperties": false,
+      "properties": {
+        "state_account_id": {
+          "type": "string",
+          "pattern": "^[0-9]{12}$"
+        },
+        "workspace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "var_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "backend_config": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["name_prefix", "artifact_bucket"],
+      "additionalProperties": false,
+      "properties": {
+        "name_prefix": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_bucket": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
